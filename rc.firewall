@@ -1,0 +1,226 @@
+#!/bin/bash
+IPT="/usr/sbin/iptables"
+IFACE_LO="lo"
+IFACE_ZERO="eth0"
+IFACE_ONE="eth1"
+
+BAD_SUBNETS=()
+
+FW_RULES_RESET(){
+	$IPT -P INPUT ACCEPT
+	$IPT -P OUTPUT ACCEPT
+	$IPT -P FORWARD ACCEPT
+	$IPT -t nat -P PREROUTING ACCEPT
+	$IPT -t nat -P POSTROUTING ACCEPT
+	$IPT -t nat -P OUTPUT ACCEPT
+	$IPT -t mangle -P PREROUTING ACCEPT
+	$IPT -t mangle -P OUTPUT ACCEPT
+
+	$IPT -F
+	$IPT -t nat -F
+	$IPT -t mangle -F
+
+	$IPT -X
+	$IPT -t nat -X
+	$IPT -t mangle -X
+
+	echo " "
+	echo "#######################################"
+	echo "# WARNING: RUNNING WITHOUT A FIREWALL #"
+	echo "#######################################"
+	echo " "
+}
+
+MOD_LOAD(){
+	echo " "
+	echo "#######################################"
+	echo "# LOADING FIREWALL..                  #"
+	echo "#######################################"
+	echo " "
+	echo "Loading kernel modules.."
+/sbin/modprobe ip_tables
+/sbin/modprobe ip_conntrack
+/sbin/modprobe ip_nat_ftp
+/sbin/modprobe ip_conntrack_ftp
+# Syn flood protection
+	if [ "$SYSCTL" = "" ]
+	then
+		echo "1" > /proc/sys/net/ipv4/tcp_syncookies
+	else
+		$SYSCTL net.ipv4.tcp_syscookies="1"
+	fi
+# Ignore icmp broadcast requests
+	if [ "$SYSCTL" = "" ]
+	then
+		echo "1" > /proc/sys/net/ipv4/icmp_echo_ignore_broadcasts
+	else
+		$SYSCTL net.ipv4.icmp_echo_ignore_broadcasts="1"
+	fi
+# Enable ip forwarding
+	if [ "$SYSCTL" = "" ]
+	then
+		echo "1" > /proc/sys/net/ipv4/ip_forward
+	else
+		$SYSCTL net.ipv4.ip_forward="1"
+	fi
+# Same origin packets
+	if [ "$SYSCTL" = "" ]
+	then
+		echo "1" > /proc/sys/net/ipv4/conf/all/rp_filter
+	else
+		$SYSCTL net.ipv4.conf.all.rp_filter="1"
+	fi
+# Disable automatic source routing, this is on by default
+	if [ "$SYSCTL" = "" ]
+	then
+		echo "0" > /proc/sys/net/ipv4/conf/all/accept_source_route
+	else
+		$SYSCTL net.ipv4.conf.all.accept_source_route="0"
+	fi
+# Accept only from gateways in the default gateway list
+	if [ "$SYSCTL" = "" ]
+	then
+		echo "1" > /proc/sys/net/ipv4/conf/all/secure_redirects
+	else
+		$SYSCTL net.ipv4.conf.all.secure_redirects="1"
+	fi
+}
+
+FW_RULES_LOAD(){
+	MOD_LOAD
+	# Default Policy to Drop
+	$IPT -P INPUT DROP
+	$IPT -P OUTPUT DROP
+	$IPT -P FORWARD DROP
+
+	# User specified chains
+	echo "Creating and populating user specified chains .."
+	$IPT -N bad_packets
+	$IPT -N bad_tcp_packets
+	$IPT -N icmp_packets
+	$IPT -N udp_inbound
+	$IPT -N tcp_inbound
+	$IPT -N udp_outbound
+	$IPT -N tcp_outbound
+##############################################################################
+	$IPT -A bad_packets -p ALL -m state --state INVALID -j LOG \
+		--log-prefix "Invalid packet: "
+	$IPT -A bad_packets -p ALL -m state --state INVALID -j DROP
+	$IPT -A bad_packets -p TCP -j bad_tcp_packets
+	$IPT -A bad_packets -p ALL -j RETURN
+echo "A"
+##############################################################################
+	$IPT -A bad_tcp_packets -p TCP ! --syn -m conntrack --ctstate NEW -j LOG \
+		--log-prefix "New packet not SYN: "
+	$IPT -A bad_tcp_packets -p TCP ! --syn -m conntrack --ctstate NEW -j DROP
+	$IPT -A bad_tcp_packets -p TCP -j RETURN
+echo "B"
+##############################################################################
+	$IPT -A icmp_packets --fragment -p ICMP -j DROP
+	$IPT -A icmp_packets -p ICMP -s 0/0 --icmp-type 8 -j DROP
+	$IPT -A icmp_packets -p ICMP -s 0/0 --icmp-type 11 -j ACCEPT
+	$IPT -A icmp_packets -p ICMP -j RETURN
+echo "C"
+##############################################################################
+	for x in "${BAD_SUBNETS[@]}";
+	do
+		$IPT -A udp_inbound -p UDP -s $x -j DROP
+	done
+  $IPT -A udp_inbound -p UDP -s 0/0 --destination-port 22 -j DROP
+	$IPT -A udp_inbound -p UDP -s 0/0 --destination-port 137 -j DROP
+	$IPT -A udp_inbound -p UDP -s 0/0 --destination-port 138 -j DROP
+	$IPT -A udp_inbound -p UDP -s 0/0 --destination-port 113 -j REJECT
+	$IPT -A udp_inbound -p UDP -j RETURN
+echo "D"
+##############################################################################
+	for x in "${BAD_SUBNETS[@]}";
+	do
+		$IPT -A tcp_inbound -p TCP -s $x -j DROP
+	done
+  
+  $IPT -A tcp_inbound -p TCP -s 0/0 --destination-port 22 -j DROP
+	$IPT -A tcp_inbound -p TCP -s 0/0 --destination-port 113 -j REJECT
+	$IPT -A tcp_inbound -p TCP -j RETURN
+echo "E"
+##############################################################################
+	for x in "${BAD_SUBNETS[@]}";
+	do
+		$IPT -A tcp_outbound -p TCP -d $x -j DROP
+	done
+	$IPT -A tcp_outbound -p TCP -j ACCEPT
+echo "F"
+##############################################################################
+	for x in "${BAD_SUBNETS[@]}";
+	do
+		$IPT -A udp_outbound -p UDP -d $x -j DROP
+	done
+	$IPT -A udp_outbound -p UDP -j ACCEPT
+echo "G"
+##############################################################################
+	$IPT -A INPUT -p ALL -i $IFACE_LO -j ACCEPT
+	$IPT -A INPUT -p ALL -d 240.0.0.1 -j DROP
+	$IPT -A INPUT -p ALL -j bad_packets
+	for x in "${BAD_SUBNETS[@]}";
+	do
+		$IPT -A INPUT -p ALL -i $IFACE_ZERO -s $x -j DROP
+	done
+
+	$IPT -A INPUT -p ALL -i $IFACE_ONE -j ACCEPT
+	$IPT -A INPUT -p TCP -i $IFACE_ZERO -j tcp_inbound
+	$IPT -A INPUT -p UDP -i $IFACE_ZERO -j udp_inbound
+	$IPT -A INPUT -p ICMP -i $IFACE_ZERO -j icmp_packets
+	$IPT -A INPUT -p ALL -i $IFACE_ZERO -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+	$IPT -A INPUT -m pkttype --pkt-type broadcast -j DROP
+echo "H"
+##############################################################################
+	$IPT -A OUTPUT -p ICMP -m state --state INVALID -j DROP
+	$IPT -A OUTPUT -p ALL -o $IFACE_LO -j ACCEPT
+	for x in "${BAD_SUBNETS[@]}";
+	do
+		$IPT -A OUTPUT -p ALL -o $IFACE_ZERO -d $x -j DROP
+	done
+	$IPT -A OUTPUT -p ALL -o $IFACE_ZERO -j ACCEPT
+	$IPT -A OUTPUT -p ALL -o $IFACE_ONE -j ACCEPT
+	$IPT -A OUTPUT -m limit --limit 3/minute --limit-burst 3 -j LOG \
+		--log-prefix "OUTPUT packet died: "
+echo "I"
+##############################################################################
+	$IPT -A FORWARD -p ALL -j bad_packets
+	$IPT -A FORWARD -p TCP -i $IFACE_ZERO -j tcp_outbound
+	$IPT -A FORWARD -p UDP -i $IFACE_ZERO -j udp_outbound
+	$IPT -A FORWARD -p ALL -i $IFACE_ZERO -j ACCEPT
+	$IPT -A FORWARD -p TCP -i $IFACE_ONE -j tcp_outbound
+	$IPT -A FORWARD -p UDP -i $IFACE_ONE -j udp_outbound
+	$IPT -A FORWARD -p ALL -i $IFACE_ONE -j ACCEPT
+	$IPT -A FORWARD -i $IFACE_ZERO -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+	$IPT -A FORWARD -m limit --limit 3/minute --limit-burst 3 -j LOG \
+		--log-prefix "FORWARD packet died: "
+echo "J"
+##############################################################################
+  $IPT -t nat -A PREROUTING -i $IFACE_ONE -d 192.168.0.19 -j DNAT \
+    --to-destination 10.10.3.2
+  $IPT -t nat -A POSTROUTING -o $IFACE_ZERO -s 10.10.3.2 -j SNAT \
+		--to-source 192.168.0.19
+##############################################################################
+}
+
+FW_RELOAD(){
+	echo "Reloading ..."
+	echo " "
+	FW_RULES_RESET
+	FW_RULES_LOAD
+}
+
+case "$1" in
+	start)
+		FW_RULES_LOAD
+		;;
+	stop)
+		FW_RULES_RESET
+		;;
+	reload)
+		FW_RELOAD
+		;;
+	*)
+		echo "Usage: $0 (start|stop|reload)"
+esac
