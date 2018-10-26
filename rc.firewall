@@ -1,10 +1,11 @@
 #!/bin/bash
 IPT="/usr/sbin/iptables"
 IFACE_LO="lo"
-IFACE_ZERO="eth0"
+IFACE_TWO="eth2"
 IFACE_ONE="eth1"
 
-BAD_SUBNETS=()
+BAD_IP=(
+)
 
 FW_RULES_RESET(){
 	$IPT -P INPUT ACCEPT
@@ -91,7 +92,7 @@ FW_RULES_LOAD(){
 	# Default Policy to Drop
 	$IPT -P INPUT DROP
 	$IPT -P OUTPUT DROP
-	$IPT -P FORWARD DROP
+	$IPT -P FORWARD ACCEPT
 
 	# User specified chains
 	echo "Creating and populating user specified chains .."
@@ -108,99 +109,89 @@ FW_RULES_LOAD(){
 	$IPT -A bad_packets -p ALL -m state --state INVALID -j DROP
 	$IPT -A bad_packets -p TCP -j bad_tcp_packets
 	$IPT -A bad_packets -p ALL -j RETURN
-echo "A"
+echo "Populating bad_packets chain"
 ##############################################################################
 	$IPT -A bad_tcp_packets -p TCP ! --syn -m conntrack --ctstate NEW -j LOG \
 		--log-prefix "New packet not SYN: "
 	$IPT -A bad_tcp_packets -p TCP ! --syn -m conntrack --ctstate NEW -j DROP
 	$IPT -A bad_tcp_packets -p TCP -j RETURN
-echo "B"
+echo "Populating bad_tcp_packets chain"
 ##############################################################################
 	$IPT -A icmp_packets --fragment -p ICMP -j DROP
+	$IPT -A icmp_packets -p ICMP -s 0/0 --icmp-type 0 -j ACCEPT
 	$IPT -A icmp_packets -p ICMP -s 0/0 --icmp-type 8 -j DROP
 	$IPT -A icmp_packets -p ICMP -s 0/0 --icmp-type 11 -j ACCEPT
 	$IPT -A icmp_packets -p ICMP -j RETURN
-echo "C"
+echo "Populating icmp_packets chain"
 ##############################################################################
-	for x in "${BAD_SUBNETS[@]}";
+	for x in "${BAD_IP[@]}";
 	do
 		$IPT -A udp_inbound -p UDP -s $x -j DROP
 	done
-  $IPT -A udp_inbound -p UDP -s 0/0 --destination-port 22 -j DROP
 	$IPT -A udp_inbound -p UDP -s 0/0 --destination-port 137 -j DROP
 	$IPT -A udp_inbound -p UDP -s 0/0 --destination-port 138 -j DROP
 	$IPT -A udp_inbound -p UDP -s 0/0 --destination-port 113 -j REJECT
 	$IPT -A udp_inbound -p UDP -j RETURN
-echo "D"
+echo "Populating udp_inbound chain"
 ##############################################################################
-	for x in "${BAD_SUBNETS[@]}";
+	for x in "${BAD_IP[@]}";
 	do
 		$IPT -A tcp_inbound -p TCP -s $x -j DROP
 	done
-  
-  $IPT -A tcp_inbound -p TCP -s 0/0 --destination-port 22 -j DROP
 	$IPT -A tcp_inbound -p TCP -s 0/0 --destination-port 113 -j REJECT
 	$IPT -A tcp_inbound -p TCP -j RETURN
-echo "E"
+echo "Populating tcp_inbound chain"
 ##############################################################################
-	for x in "${BAD_SUBNETS[@]}";
+	for x in "${BAD_IP[@]}";
 	do
 		$IPT -A tcp_outbound -p TCP -d $x -j DROP
 	done
 	$IPT -A tcp_outbound -p TCP -j ACCEPT
-echo "F"
+echo "Populating tcp_outbound chain"
 ##############################################################################
-	for x in "${BAD_SUBNETS[@]}";
+	for x in "${BAD_IP[@]}";
 	do
 		$IPT -A udp_outbound -p UDP -d $x -j DROP
 	done
 	$IPT -A udp_outbound -p UDP -j ACCEPT
-echo "G"
+echo "Populating udp_outbound chain"
 ##############################################################################
 	$IPT -A INPUT -p ALL -i $IFACE_LO -j ACCEPT
 	$IPT -A INPUT -p ALL -d 240.0.0.1 -j DROP
 	$IPT -A INPUT -p ALL -j bad_packets
-	for x in "${BAD_SUBNETS[@]}";
+	for x in "${BAD_IP[@]}";
 	do
-		$IPT -A INPUT -p ALL -i $IFACE_ZERO -s $x -j DROP
+		$IPT -A INPUT -p ALL -i $IFACE_TWO -s $x -j DROP
 	done
-
-	$IPT -A INPUT -p ALL -i $IFACE_ONE -j ACCEPT
-	$IPT -A INPUT -p TCP -i $IFACE_ZERO -j tcp_inbound
-	$IPT -A INPUT -p UDP -i $IFACE_ZERO -j udp_inbound
-	$IPT -A INPUT -p ICMP -i $IFACE_ZERO -j icmp_packets
-	$IPT -A INPUT -p ALL -i $IFACE_ZERO -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+	$IPT -A INPUT -p ALL -i $IFACE_TWO -j ACCEPT
+	$IPT -A INPUT -p TCP -i $IFACE_ONE -j tcp_inbound
+	$IPT -A INPUT -p UDP -i $IFACE_ONE -j udp_inbound
+	$IPT -A INPUT -p ICMP -i $IFACE_ONE -j icmp_packets
 	$IPT -A INPUT -m pkttype --pkt-type broadcast -j DROP
-echo "H"
+echo "Populating INPUT table"
 ##############################################################################
 	$IPT -A OUTPUT -p ICMP -m state --state INVALID -j DROP
 	$IPT -A OUTPUT -p ALL -o $IFACE_LO -j ACCEPT
-	for x in "${BAD_SUBNETS[@]}";
+	for x in "${BAD_IP[@]}";
 	do
-		$IPT -A OUTPUT -p ALL -o $IFACE_ZERO -d $x -j DROP
+		$IPT -A OUTPUT -p ALL -o $IFACE_TWO -d $x -j DROP
 	done
-	$IPT -A OUTPUT -p ALL -o $IFACE_ZERO -j ACCEPT
+	$IPT -A OUTPUT -p ALL -o $IFACE_TWO -j ACCEPT
 	$IPT -A OUTPUT -p ALL -o $IFACE_ONE -j ACCEPT
-	$IPT -A OUTPUT -m limit --limit 3/minute --limit-burst 3 -j LOG \
-		--log-prefix "OUTPUT packet died: "
-echo "I"
+echo "Populating OUTPUT table"
 ##############################################################################
 	$IPT -A FORWARD -p ALL -j bad_packets
-	$IPT -A FORWARD -p TCP -i $IFACE_ZERO -j tcp_outbound
-	$IPT -A FORWARD -p UDP -i $IFACE_ZERO -j udp_outbound
-	$IPT -A FORWARD -p ALL -i $IFACE_ZERO -j ACCEPT
+
+	$IPT -A FORWARD -p TCP -i $IFACE_TWO -j tcp_outbound
+	$IPT -A FORWARD -p UDP -i $IFACE_TWO -j udp_outbound
 	$IPT -A FORWARD -p TCP -i $IFACE_ONE -j tcp_outbound
 	$IPT -A FORWARD -p UDP -i $IFACE_ONE -j udp_outbound
-	$IPT -A FORWARD -p ALL -i $IFACE_ONE -j ACCEPT
-	$IPT -A FORWARD -i $IFACE_ZERO -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-	$IPT -A FORWARD -m limit --limit 3/minute --limit-burst 3 -j LOG \
-		--log-prefix "FORWARD packet died: "
-echo "J"
+echo "Populating FORWARD table"
 ##############################################################################
-  $IPT -t nat -A PREROUTING -i $IFACE_ONE -d 192.168.0.19 -j DNAT \
-    --to-destination 10.10.3.2
-  $IPT -t nat -A POSTROUTING -o $IFACE_ZERO -s 10.10.3.2 -j SNAT \
-		--to-source 192.168.0.19
+  $IPT -t nat -A PREROUTING -i $IFACE_TWO -d 192.168.1.64 -j DNAT \
+  	  --to-destination 10.10.3.2
+  $IPT -t nat -A POSTROUTING -o $IFACE_ONE -s 10.10.3.0/24 -j SNAT \
+	  --to-source 192.168.1.64
 ##############################################################################
 }
 
