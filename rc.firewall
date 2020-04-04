@@ -1,5 +1,6 @@
 #!/bin/bash
 IPT="/usr/sbin/iptables"
+
 IFACE_LO="lo"
 IFACE_TWO="eth2"
 IFACE_ONE="eth1"
@@ -39,46 +40,53 @@ MOD_LOAD(){
 	echo "#######################################"
 	echo " "
 	echo "Loading kernel modules.."
-/sbin/modprobe ip_tables
-/sbin/modprobe ip_conntrack
-/sbin/modprobe ip_nat_ftp
-/sbin/modprobe ip_conntrack_ftp
-# Syn flood protection
+
+  /sbin/modprobe ip_tables
+  /sbin/modprobe ip_conntrack
+  /sbin/modprobe ip_nat_ftp
+  /sbin/modprobe ip_conntrack_ftp
+
+  # Syn flood protection
 	if [ "$SYSCTL" = "" ]
 	then
 		echo "1" > /proc/sys/net/ipv4/tcp_syncookies
 	else
 		$SYSCTL net.ipv4.tcp_syscookies="1"
 	fi
-# Ignore icmp broadcast requests
+
+  # Ignore icmp broadcast requests
 	if [ "$SYSCTL" = "" ]
 	then
 		echo "1" > /proc/sys/net/ipv4/icmp_echo_ignore_broadcasts
 	else
 		$SYSCTL net.ipv4.icmp_echo_ignore_broadcasts="1"
 	fi
-# Enable ip forwarding
+
+  # Enable ip forwarding
 	if [ "$SYSCTL" = "" ]
 	then
 		echo "1" > /proc/sys/net/ipv4/ip_forward
 	else
 		$SYSCTL net.ipv4.ip_forward="1"
 	fi
-# Same origin packets
+
+  # Same origin packets
 	if [ "$SYSCTL" = "" ]
 	then
 		echo "1" > /proc/sys/net/ipv4/conf/all/rp_filter
 	else
 		$SYSCTL net.ipv4.conf.all.rp_filter="1"
 	fi
-# Disable automatic source routing, this is on by default
+
+  # Disable automatic source routing, this is on by default
 	if [ "$SYSCTL" = "" ]
 	then
 		echo "0" > /proc/sys/net/ipv4/conf/all/accept_source_route
 	else
 		$SYSCTL net.ipv4.conf.all.accept_source_route="0"
 	fi
-# Accept only from gateways in the default gateway list
+
+  # Accept only from gateways in the default gateway list
 	if [ "$SYSCTL" = "" ]
 	then
 		echo "1" > /proc/sys/net/ipv4/conf/all/secure_redirects
@@ -103,26 +111,28 @@ FW_RULES_LOAD(){
 	$IPT -N tcp_inbound
 	$IPT -N udp_outbound
 	$IPT -N tcp_outbound
+
 ##############################################################################
-	$IPT -A bad_packets -p ALL -m state --state INVALID -j LOG \
-		--log-prefix "Invalid packet: "
+	$IPT -A bad_packets -p ALL -m state --state INVALID -j LOG --log-prefix "Invalid packet: "
 	$IPT -A bad_packets -p ALL -m state --state INVALID -j DROP
 	$IPT -A bad_packets -p TCP -j bad_tcp_packets
 	$IPT -A bad_packets -p ALL -j RETURN
-echo "Populating bad_packets chain"
+
+  echo "Populating bad_packets chain"
 ##############################################################################
-	$IPT -A bad_tcp_packets -p TCP ! --syn -m conntrack --ctstate NEW -j LOG \
-		--log-prefix "New packet not SYN: "
+	$IPT -A bad_tcp_packets -p TCP ! --syn -m conntrack --ctstate NEW -j LOG --log-prefix "New packet not SYN: "
 	$IPT -A bad_tcp_packets -p TCP ! --syn -m conntrack --ctstate NEW -j DROP
 	$IPT -A bad_tcp_packets -p TCP -j RETURN
-echo "Populating bad_tcp_packets chain"
+
+  echo "Populating bad_tcp_packets chain"
 ##############################################################################
 	$IPT -A icmp_packets --fragment -p ICMP -j DROP
 	$IPT -A icmp_packets -p ICMP -s 0/0 --icmp-type 0 -j ACCEPT
 	$IPT -A icmp_packets -p ICMP -s 0/0 --icmp-type 8 -j DROP
 	$IPT -A icmp_packets -p ICMP -s 0/0 --icmp-type 11 -j ACCEPT
 	$IPT -A icmp_packets -p ICMP -j RETURN
-echo "Populating icmp_packets chain"
+
+  echo "Populating icmp_packets chain"
 ##############################################################################
 	for x in "${BAD_IP[@]}";
 	do
@@ -132,7 +142,8 @@ echo "Populating icmp_packets chain"
 	$IPT -A udp_inbound -p UDP -s 0/0 --destination-port 138 -j DROP
 	$IPT -A udp_inbound -p UDP -s 0/0 --destination-port 113 -j REJECT
 	$IPT -A udp_inbound -p UDP -j RETURN
-echo "Populating udp_inbound chain"
+
+  echo "Populating udp_inbound chain"
 ##############################################################################
 	for x in "${BAD_IP[@]}";
 	do
@@ -140,21 +151,24 @@ echo "Populating udp_inbound chain"
 	done
 	$IPT -A tcp_inbound -p TCP -s 0/0 --destination-port 113 -j REJECT
 	$IPT -A tcp_inbound -p TCP -j RETURN
-echo "Populating tcp_inbound chain"
+
+  echo "Populating tcp_inbound chain"
 ##############################################################################
 	for x in "${BAD_IP[@]}";
 	do
 		$IPT -A tcp_outbound -p TCP -d $x -j DROP
 	done
 	$IPT -A tcp_outbound -p TCP -j ACCEPT
-echo "Populating tcp_outbound chain"
+
+  echo "Populating tcp_outbound chain"
 ##############################################################################
 	for x in "${BAD_IP[@]}";
 	do
 		$IPT -A udp_outbound -p UDP -d $x -j DROP
 	done
 	$IPT -A udp_outbound -p UDP -j ACCEPT
-echo "Populating udp_outbound chain"
+
+  echo "Populating udp_outbound chain"
 ##############################################################################
 	$IPT -A INPUT -p ALL -i $IFACE_LO -j ACCEPT
 	$IPT -A INPUT -p ALL -d 240.0.0.1 -j DROP
@@ -168,7 +182,8 @@ echo "Populating udp_outbound chain"
 	$IPT -A INPUT -p UDP -i $IFACE_ONE -j udp_inbound
 	$IPT -A INPUT -p ICMP -i $IFACE_ONE -j icmp_packets
 	$IPT -A INPUT -m pkttype --pkt-type broadcast -j DROP
-echo "Populating INPUT table"
+
+  echo "Populating INPUT table"
 ##############################################################################
 	$IPT -A OUTPUT -p ICMP -m state --state INVALID -j DROP
 	$IPT -A OUTPUT -p ALL -o $IFACE_LO -j ACCEPT
@@ -178,7 +193,8 @@ echo "Populating INPUT table"
 	done
 	$IPT -A OUTPUT -p ALL -o $IFACE_TWO -j ACCEPT
 	$IPT -A OUTPUT -p ALL -o $IFACE_ONE -j ACCEPT
-echo "Populating OUTPUT table"
+
+  echo "Populating OUTPUT table"
 ##############################################################################
 	$IPT -A FORWARD -p ALL -j bad_packets
 
@@ -186,12 +202,11 @@ echo "Populating OUTPUT table"
 	$IPT -A FORWARD -p UDP -i $IFACE_TWO -j udp_outbound
 	$IPT -A FORWARD -p TCP -i $IFACE_ONE -j tcp_outbound
 	$IPT -A FORWARD -p UDP -i $IFACE_ONE -j udp_outbound
-echo "Populating FORWARD table"
+
+  echo "Populating FORWARD table"
 ##############################################################################
-  $IPT -t nat -A PREROUTING -i $IFACE_TWO -d 192.168.1.64 -j DNAT \
-  	  --to-destination 10.10.3.2
-  $IPT -t nat -A POSTROUTING -o $IFACE_ONE -s 10.10.3.0/24 -j SNAT \
-	  --to-source 192.168.1.64
+  $IPT -t nat -A PREROUTING -i $IFACE_TWO -d 192.168.1.64 -j DNAT --to-destination 10.10.3.1
+  $IPT -t nat -A POSTROUTING -o $IFACE_ONE -s 10.10.3.0/24 -j SNAT --to-source 192.168.1.64
 ##############################################################################
 }
 
